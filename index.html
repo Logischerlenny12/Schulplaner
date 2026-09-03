@@ -10,7 +10,17 @@
   --line: #e5e5ea; --accent: #007aff; --red: #ff3b30; --green: #34c759;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { 
+  margin: 0; 
+  background-color: var(--bg); 
+  /* Kariertes Schul-Papier Hintergrund */
+  background-image: 
+    linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.06) 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: var(--text); 
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+}
 .app { min-height: 100vh; }
 .side { position: fixed; inset: 0 auto 0 0; width: 70px; background: var(--card); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 20px 0; z-index: 5; }
 .logo { width: 42px; height: 42px; border-radius: 12px; background: var(--accent); color: white; display: grid; place-items: center; font-weight: 800; font-size: 20px; margin-bottom: 30px; }
@@ -83,10 +93,13 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -app
 <script type="module">
 const $ = x => document.getElementById(x);
 
-// Arcade-Trick: Optmistisches UI Laden ohne Warten
+// Arcade-Trick Fix: Zeichnet nur den sicheren Rahmen, ohne auf fehlende Nutzerdaten zuzugreifen
 if(localStorage.getItem('isLoggedIn') === 'true'){
   if($('loader')) $('loader').style.display = 'none';
-  render(); // Zeichnet sofort das Gerüst
+  $('root').innerHTML = `
+    <div class="side"><div class="logo">S</div></div>
+    <div class="main"><div class="top"><h1>Schulplaner</h1></div><div id="content"><div class="empty">Daten werden synchronisiert...</div></div></div>
+  `;
 }
 
 import{initializeApp}from'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
@@ -113,20 +126,17 @@ const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const today=()=>new Date().toISOString().slice(0,10), add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)}, wd=d=>new Date(d+'T12:00:00').getDay(), fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
 
 function err(e){return esc(e?.message||e)}
-// LENNARD IST IMMER ADMIN:
-function sys(){return S.u?.email === 'lennard@huennies.de' || !!S.ud?.systemAdmin}
+function sys(){return !!S.ud?.systemAdmin} // Wieder normal, bezieht System-Admin Status aus Firebase
 function cad(){return sys()||!!S.cls?.adminIds?.includes(S.u.uid)}
 function clearListeners(){ S.unsubs.forEach(u=>u()); S.unsubs=[]; if(S.stopChat){S.stopChat();S.stopChat=null;} }
 function getAllHw(){ return [...S.hwPersonal, ...S.hwGroup]; }
 
-// Wichtig: Prüft, ob Hausaufgabe abgehakt ist (Privat = bool, Gruppe = ist meine UID im Array?)
 function isHwDone(h){ return h.scope==='group' ? h.doneBy?.includes(S.u.uid) : !!h.done; }
 
 onAuthStateChanged(auth, user => {
   if (user) {
     localStorage.setItem('isLoggedIn', 'true');
     S.u = user;
-    if($('loader')) $('loader').style.display = 'none';
     initApp();
   } else {
     localStorage.removeItem('isLoggedIn');
@@ -191,7 +201,6 @@ async function initApp(){
     S.classes = [...m.values()];
     S.cls = S.classes.find(x=>x.id===localStorage.cls) || S.classes[0] || null;
     
-    // Wenn in keiner Klasse -> Lade alle Klassen für das Beitritts-Menü
     if(S.cls) {
        localStorage.cls = S.cls.id;
     } else {
@@ -200,6 +209,7 @@ async function initApp(){
        S.allClasses = ac.docs.map(d=>({id:d.id, ...d.data()}));
     }
     
+    buildShell(); // Baue die echte Seitenleiste auf (jetzt kennen wir den Admin-Status)
     setupLiveSync();
   } catch(e) {
     $('root').innerHTML=`<div class=auth><div class=authbox><h2>Datenbank-Fehler</h2><div class="msg err">${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
@@ -210,32 +220,27 @@ async function initApp(){
 function setupLiveSync(){
   clearListeners();
   
-  // Eigene Hausaufgaben
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'homework'), s=>{
     S.hwPersonal = s.docs.map(d=>({id:d.id, scope:'personal', ...d.data()})); renderContentOnly();
   }));
   
-  // Packliste
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'pack'), s=>{
     S.pack = s.docs.map(d=>({id:d.id, ...d.data()})); renderContentOnly();
   }));
   
-  // User Profil Updates
   S.unsubs.push(onSnapshot(doc(db,'users',S.u.uid), s=>{
     if(s.exists()){ S.ud = s.data(); renderContentOnly(); }
   }));
   
-  // Benachrichtigungen (Glocke)
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'notifications'), s=>{
     S.notifications = s.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.ts?.seconds||0)-(a.ts?.seconds||0));
-    let hasUnread = S.notifications.length > 0; // Hier könnte man eine "read" Property einbauen
+    let hasUnread = S.notifications.length > 0;
     if($('bellDot')) $('bellDot').style.display = hasUnread ? 'block' : 'none';
     renderContentOnly();
   }));
 
-  if(!S.cls) { render(); return; } // Stoppe hier, wenn Nutzer in keiner Klasse ist
+  if(!S.cls) { renderContentOnly(); return; }
 
-  // Stundenplan der Klasse synchronisieren
   S.unsubs.push(onSnapshot(collection(db,'classes',S.cls.id,'lessons'), s=>{
     S.lessons = s.docs.map(d=>({id:d.id, ...d.data()})); renderContentOnly();
   }));
@@ -256,7 +261,7 @@ function setupLiveSync(){
         renderContentOnly();
       }));
     }
-    render();
+    renderContentOnly();
   });
 }
 
@@ -310,7 +315,7 @@ function grouped(a){
 }
 
 function renderContentOnly(){
-  if(!$('content')) return;
+  if(!$('content') || !S.u || !S.ud) return; // FIX: Crash-Schutz, falls Daten noch fehlen
   if(S.view==='home') home();
   if(S.view==='timetable') timetable();
   if(S.view==='homework') homeworkView();
@@ -318,11 +323,40 @@ function renderContentOnly(){
   if(S.view==='personal') personal();
   if(S.view==='groups') groups();
   if(S.view==='inbox') inbox();
+  if(S.view==='admin') adminView();
   bindChecks();
 }
 
+function buildShell(){
+  let adminBtn = sys() ? `<button id="navAdmin" title="System-Admin">⚙️</button>` : '';
+  $('root').innerHTML = `
+    <div class="side">
+      <div class="logo">S</div>
+      <div class="nav">
+        <button id="navHome" title="Übersicht">🏠</button>
+        <button id="navPers" title="Persönlich">👤</button>
+        <button id="navTimetable" title="Stundenplan">📅</button>
+        <button id="navGroups" title="Gruppen">👥</button>
+        <button id="navInbox" title="Benachrichtigungen">🔔<div id="bellDot" class="dot" style="display:none"></div></button>
+        ${adminBtn}
+        <button id="navOut" title="Ausloggen">🚪</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="top"><h1>Schulplaner</h1></div>
+      <div id="content"></div>
+    </div>
+  `;
+  $('navHome').onclick=()=>{S.view='home';renderContentOnly()};
+  $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
+  $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
+  $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
+  $('navInbox').onclick=()=>{S.view='inbox';renderContentOnly()};
+  if($('navAdmin')) $('navAdmin').onclick=()=>{S.view='admin';renderContentOnly()};
+  $('navOut').onclick=()=>signOut(auth);
+}
+
 function home(){
-  // KLASSE BEITRETEN / ERSTELLEN MODUS
   if(!S.cls) {
     $('content').innerHTML=`<div class=card><div class=title><h2>Willkommen!</h2></div><p>Du bist noch in keiner Klasse.</p>
     <div class=form>
@@ -349,7 +383,6 @@ function home(){
     return;
   }
 
-  // NORMALE HOME-ANSICHT
   let d=today(), ls=S.lessons.filter(x=>Number(x.weekday)===wd(d)-1).sort((a,b)=>a.period-b.period);
   let allHw = getAllHw(), due=allHw.filter(urgent), rest=allHw.filter(x=>!isHwDone(x)&&!urgent(x)), p=packForNow(S.pack);
   $('content').innerHTML=`
@@ -361,7 +394,41 @@ function home(){
   $('ah').onclick=()=>hwModal(); $('ap').onclick=()=>packModal();
 }
 
-// Benachrichtigungs-Postfach (Glocke)
+// ADMIN BEREICH
+async function adminView(){
+  $('content').innerHTML=`<div class=loading>Lade Anfragen...</div>`;
+  let reqs = await getDocs(query(collection(db,'classRequests')));
+  let html = `<div class=card><div class=title><h2>Klassen-Anfragen</h2></div><div class=tasks>`;
+  if(reqs.empty) html += `<div class=empty>Keine offenen Anfragen.</div>`;
+  reqs.forEach(d => {
+    let r = d.data();
+    html += `<div class="box"><b>${esc(r.name)}</b> <span class=muted>von ${esc(r.email)}</span>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn green small" data-acc="${d.id}" data-name="${esc(r.name)}" data-uid="${r.uid}">Erstellen</button>
+        <button class="btn red small" data-rej="${d.id}">Ablehnen</button>
+      </div>
+    </div>`;
+  });
+  html += `</div></div>`;
+  $('content').innerHTML = html;
+
+  document.querySelectorAll('[data-acc]').forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      await addDoc(collection(db,'classes'), { name: b.dataset.name, adminIds: [b.dataset.uid], memberIds: [b.dataset.uid] });
+      await deleteDoc(doc(db,'classRequests', b.dataset.acc));
+      adminView();
+    }
+  });
+  document.querySelectorAll('[data-rej]').forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      await deleteDoc(doc(db,'classRequests', b.dataset.rej));
+      adminView();
+    }
+  });
+}
+
 function inbox(){
   $('content').innerHTML=`<div class=card><div class=title><h2>Benachrichtigungen</h2></div>
   <div class=tasks>${S.notifications.map(n=>`<div class="box"><b>${esc(n.title||'System')}</b><div class="muted" style="margin-top:4px;">${esc(n.text)}</div></div>`).join('')||'<div class=empty>Du hast keine Benachrichtigungen.</div>'}</div></div>`;
@@ -388,7 +455,7 @@ function personal(){
 }
 
 function timetable(){
-  if(!S.cls){ home(); return; } // Ohne Klasse -> leite zum Menü auf Home um
+  if(!S.cls){ home(); return; }
   $('content').innerHTML=`<div class=card><div class=title><h2>Stundenplan (${esc(S.cls.name)})</h2>${cad()?'<button class="btn primary" id=ntl>+ Stunde</button>':''}</div>
   <div class=grid>${S.lessons.sort((a,b)=>a.weekday-b.weekday || a.period-b.period).map(x=>`<div class=lesson><small class=muted>Tag ${Number(x.weekday)+1} · ${x.period}. Std</small><strong>${esc(x.subject)}</strong></div>`).join('')||'<div class="empty">Stundenplan ist leer.</div>'}</div></div>`;
   
@@ -403,13 +470,12 @@ function timetable(){
 }
 
 function groups(){
-  if(!S.cls){ home(); return; } // Ohne Klasse -> leite zum Menü auf Home um
+  if(!S.cls){ home(); return; }
   let gs=S.groups.filter(g=>S.gm.has(g.id));
   $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div><div class="groups">${gs.length ? gs.map(g=>`<div class="group"><b>${esc(g.name)}</b><button class="btn primary small" data-chat="${g.id}">Chat öffnen</button></div>`).join('') : '<div class="empty">Du bist in keinen Gruppen.</div>'}</div></div>`;
   document.querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>groupChat(b.dataset.chat));
 }
 
-// Live Gruppen-Chat
 function groupChat(gId){
    S.view='chat';
    let g = S.groups.find(x=>x.id===gId);
@@ -489,35 +555,6 @@ function packModal(){
     await addDoc(collection(db,'users',S.u.uid,'pack'), {item: $('pi').value.trim(), mode: $('pm').value, date: $('pd').value||null, done:false});
     $('modal').innerHTML='';
   }
-}
-
-function render(){
-  if(!$('root').innerHTML.includes('class="side"')) {
-    $('root').innerHTML = `
-      <div class="side">
-        <div class="logo">S</div>
-        <div class="nav">
-          <button id="navHome" title="Übersicht">🏠</button>
-          <button id="navPers" title="Persönlich">👤</button>
-          <button id="navTimetable" title="Stundenplan">📅</button>
-          <button id="navGroups" title="Gruppen">👥</button>
-          <button id="navInbox" title="Benachrichtigungen">🔔<div id="bellDot" class="dot" style="display:none"></div></button>
-          <button id="navOut" title="Ausloggen">🚪</button>
-        </div>
-      </div>
-      <div class="main">
-        <div class="top"><h1>Schulplaner</h1></div>
-        <div id="content"></div>
-      </div>
-    `;
-    $('navHome').onclick=()=>{S.view='home';renderContentOnly()};
-    $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
-    $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
-    $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
-    $('navInbox').onclick=()=>{S.view='inbox';renderContentOnly()};
-    $('navOut').onclick=()=>signOut(auth);
-  }
-  renderContentOnly();
 }
 </script>
 </body>

@@ -15,7 +15,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -app
 .side { position: fixed; inset: 0 auto 0 0; width: 70px; background: var(--card); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 20px 0; z-index: 5; }
 .logo { width: 42px; height: 42px; border-radius: 12px; background: var(--accent); color: white; display: grid; place-items: center; font-weight: 800; font-size: 20px; margin-bottom: 30px; }
 .nav { display: grid; gap: 12px; width: 100%; padding: 0 10px; }
-.nav button { height: 50px; border: 0; border-radius: 12px; background: transparent; font-size: 22px; color: #c7c7cc; cursor: pointer; transition: 0.2s; }
+.nav button { height: 50px; border: 0; border-radius: 12px; background: transparent; font-size: 22px; color: #c7c7cc; cursor: pointer; transition: 0.2s; position: relative; }
 .nav button.active, .nav button:hover { background: #e5f1ff; color: var(--accent); }
 .main { margin-left: 70px; max-width: 1100px; padding: 30px 40px; margin-inline: auto; }
 .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
@@ -73,6 +73,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -app
 .message.mine { margin-left: auto; background: var(--accent); color: white; }
 .message small { display: block; opacity: 0.6; font-size: 11px; margin-bottom: 4px; }
 .loading { min-height: 100vh; display: grid; place-items: center; color: var(--muted); font-weight: 600; font-size: 16px; }
+.dot { position: absolute; top: 8px; right: 8px; width: 10px; height: 10px; background: var(--red); border-radius: 50%; border: 2px solid var(--card); }
 @media(max-width:750px) { .side { width: 60px; } .main { margin-left: 60px; padding: 20px; } .two { grid-template-columns: 1fr; } .top h1 { font-size: 24px; } .authbox { padding: 30px 20px; } }
 </style>
 </head>
@@ -107,12 +108,13 @@ const db=getFirestore(app);
 
 setPersistence(auth, browserLocalPersistence).catch(console.error);
 
-const S={u:null, ud:null, view:'home', classes:[], cls:null, lessons:[], hwPersonal:[], hwGroup:[], pack:[], groups:[], gm:new Set(), inv:[], chat:null, stopChat:null, unsubs:[], mode:'login'};
+const S={u:null, ud:null, view:'home', classes:[], cls:null, allClasses:[], lessons:[], hwPersonal:[], hwGroup:[], pack:[], groups:[], gm:new Set(), notifications:[], chat:null, stopChat:null, unsubs:[], mode:'login'};
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today=()=>new Date().toISOString().slice(0,10), add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)}, wd=d=>new Date(d+'T12:00:00').getDay(), fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
 
 function err(e){return esc(e?.message||e)}
-function sys(){return!!S.ud?.systemAdmin}
+// LENNARD IST IMMER ADMIN:
+function sys(){return S.u?.email === 'lennard@huennies.de' || !!S.ud?.systemAdmin}
 function cad(){return sys()||!!S.cls?.adminIds?.includes(S.u.uid)}
 function clearListeners(){ S.unsubs.forEach(u=>u()); S.unsubs=[]; if(S.stopChat){S.stopChat();S.stopChat=null;} }
 function getAllHw(){ return [...S.hwPersonal, ...S.hwGroup]; }
@@ -188,7 +190,15 @@ async function initApp(){
     [...a.docs,...b.docs].forEach(d=>m.set(d.id,{id:d.id,...d.data()}));
     S.classes = [...m.values()];
     S.cls = S.classes.find(x=>x.id===localStorage.cls) || S.classes[0] || null;
-    if(S.cls) localStorage.cls = S.cls.id; else localStorage.removeItem('cls');
+    
+    // Wenn in keiner Klasse -> Lade alle Klassen für das Beitritts-Menü
+    if(S.cls) {
+       localStorage.cls = S.cls.id;
+    } else {
+       localStorage.removeItem('cls');
+       let ac = await getDocs(collection(db, 'classes'));
+       S.allClasses = ac.docs.map(d=>({id:d.id, ...d.data()}));
+    }
     
     setupLiveSync();
   } catch(e) {
@@ -199,16 +209,31 @@ async function initApp(){
 
 function setupLiveSync(){
   clearListeners();
+  
+  // Eigene Hausaufgaben
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'homework'), s=>{
     S.hwPersonal = s.docs.map(d=>({id:d.id, scope:'personal', ...d.data()})); renderContentOnly();
   }));
+  
+  // Packliste
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'pack'), s=>{
     S.pack = s.docs.map(d=>({id:d.id, ...d.data()})); renderContentOnly();
   }));
+  
+  // User Profil Updates
   S.unsubs.push(onSnapshot(doc(db,'users',S.u.uid), s=>{
     if(s.exists()){ S.ud = s.data(); renderContentOnly(); }
   }));
-  if(!S.cls) { render(); return; }
+  
+  // Benachrichtigungen (Glocke)
+  S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'notifications'), s=>{
+    S.notifications = s.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.ts?.seconds||0)-(a.ts?.seconds||0));
+    let hasUnread = S.notifications.length > 0; // Hier könnte man eine "read" Property einbauen
+    if($('bellDot')) $('bellDot').style.display = hasUnread ? 'block' : 'none';
+    renderContentOnly();
+  }));
+
+  if(!S.cls) { render(); return; } // Stoppe hier, wenn Nutzer in keiner Klasse ist
 
   // Stundenplan der Klasse synchronisieren
   S.unsubs.push(onSnapshot(collection(db,'classes',S.cls.id,'lessons'), s=>{
@@ -269,7 +294,6 @@ function bindChecks(){
     if(scope==='personal') {
       await updateDoc(doc(db,'users',S.u.uid,'homework',id), {done:nowDone});
     } else {
-      // Gruppen-HW: Füge mich ins doneBy Array hinzu oder entferne mich (nur lokal für mich abgehakt)
       await updateDoc(doc(db,'groups',gId,'homework',id), {doneBy: nowDone ? arrayUnion(S.u.uid) : arrayRemove(S.u.uid)});
     }
   });
@@ -293,10 +317,39 @@ function renderContentOnly(){
   if(S.view==='pack') packView();
   if(S.view==='personal') personal();
   if(S.view==='groups') groups();
+  if(S.view==='inbox') inbox();
   bindChecks();
 }
 
 function home(){
+  // KLASSE BEITRETEN / ERSTELLEN MODUS
+  if(!S.cls) {
+    $('content').innerHTML=`<div class=card><div class=title><h2>Willkommen!</h2></div><p>Du bist noch in keiner Klasse.</p>
+    <div class=form>
+      <div class=field><label>Vorhandener Klasse beitreten:</label>
+        <select id="joinClsSel"><option value="">-- Klasse wählen --</option>${S.allClasses.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      </div>
+      <button class="btn primary" id="btnJoin">Beitreten</button>
+      <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
+      <div class=field><label>Oder neue Klasse beantragen:</label><input id="newClsName" placeholder="Name der neuen Klasse"></div>
+      <button class="btn" id="btnReq">Anfrage senden</button>
+    </div></div>`;
+    
+    $('btnJoin').onclick=async()=>{
+       let cid = $('joinClsSel').value; if(!cid) return;
+       await updateDoc(doc(db,'classes',cid), {memberIds: arrayUnion(S.u.uid)});
+       location.reload();
+    };
+    $('btnReq').onclick=async()=>{
+       let n = $('newClsName').value.trim(); if(!n) return;
+       await addDoc(collection(db,'classRequests'), {name:n, uid:S.u.uid, email:S.u.email, ts:serverTimestamp()});
+       alert("Anfrage gesendet! Sie wird von einem Admin geprüft.");
+       $('newClsName').value='';
+    };
+    return;
+  }
+
+  // NORMALE HOME-ANSICHT
   let d=today(), ls=S.lessons.filter(x=>Number(x.weekday)===wd(d)-1).sort((a,b)=>a.period-b.period);
   let allHw = getAllHw(), due=allHw.filter(urgent), rest=allHw.filter(x=>!isHwDone(x)&&!urgent(x)), p=packForNow(S.pack);
   $('content').innerHTML=`
@@ -306,6 +359,12 @@ function home(){
     <div class=card><div class=title><h2>🎒 Packen</h2><button class="btn primary" id=ap>+ Sache</button></div>${p.length?`<div class=tasks>${p.map(packHTML).join('')}</div>`:'<div class=empty>Nichts zu packen für jetzt.</div>'}</div>
   `;
   $('ah').onclick=()=>hwModal(); $('ap').onclick=()=>packModal();
+}
+
+// Benachrichtigungs-Postfach (Glocke)
+function inbox(){
+  $('content').innerHTML=`<div class=card><div class=title><h2>Benachrichtigungen</h2></div>
+  <div class=tasks>${S.notifications.map(n=>`<div class="box"><b>${esc(n.title||'System')}</b><div class="muted" style="margin-top:4px;">${esc(n.text)}</div></div>`).join('')||'<div class=empty>Du hast keine Benachrichtigungen.</div>'}</div></div>`;
 }
 
 function homeworkView(){
@@ -328,9 +387,8 @@ function personal(){
   $('ph').onclick=()=>hwModal(); $('pp').onclick=()=>packModal();
 }
 
-// Admin / Stundenplan
 function timetable(){
-  if(!S.cls){ $('content').innerHTML='<div class="empty">Klasse fehlt.</div>'; return; }
+  if(!S.cls){ home(); return; } // Ohne Klasse -> leite zum Menü auf Home um
   $('content').innerHTML=`<div class=card><div class=title><h2>Stundenplan (${esc(S.cls.name)})</h2>${cad()?'<button class="btn primary" id=ntl>+ Stunde</button>':''}</div>
   <div class=grid>${S.lessons.sort((a,b)=>a.weekday-b.weekday || a.period-b.period).map(x=>`<div class=lesson><small class=muted>Tag ${Number(x.weekday)+1} · ${x.period}. Std</small><strong>${esc(x.subject)}</strong></div>`).join('')||'<div class="empty">Stundenplan ist leer.</div>'}</div></div>`;
   
@@ -344,9 +402,8 @@ function timetable(){
   }
 }
 
-// Gruppen Übersicht
 function groups(){
-  if(!S.cls){ $('content').innerHTML='<div class=card><div class=empty>Wähle zuerst eine Klasse.</div></div>'; return; }
+  if(!S.cls){ home(); return; } // Ohne Klasse -> leite zum Menü auf Home um
   let gs=S.groups.filter(g=>S.gm.has(g.id));
   $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div><div class="groups">${gs.length ? gs.map(g=>`<div class="group"><b>${esc(g.name)}</b><button class="btn primary small" data-chat="${g.id}">Chat öffnen</button></div>`).join('') : '<div class="empty">Du bist in keinen Gruppen.</div>'}</div></div>`;
   document.querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>groupChat(b.dataset.chat));
@@ -377,7 +434,6 @@ function groupChat(gId){
    };
 }
 
-// Modals für Neue Einträge
 function hwModal(){
   $('modal').innerHTML = `
   <div class="modalbg" id="mbg">
@@ -402,7 +458,7 @@ function hwModal(){
     e.preventDefault();
     let g = $('hwg').value, s = $('hws').value.trim(), t = $('hwt').value.trim();
     if(g==='personal') await addDoc(collection(db,'users',S.u.uid,'homework'), {subject:s, task:t, done:false, createdAt:serverTimestamp()});
-    else await addDoc(collection(db,'groups',g,'homework'), {subject:s, task:t, doneBy:[], createdAt:serverTimestamp()}); // Startet mit leerem doneBy Array!
+    else await addDoc(collection(db,'groups',g,'homework'), {subject:s, task:t, doneBy:[], createdAt:serverTimestamp()});
     $('modal').innerHTML='';
   }
 }
@@ -445,6 +501,7 @@ function render(){
           <button id="navPers" title="Persönlich">👤</button>
           <button id="navTimetable" title="Stundenplan">📅</button>
           <button id="navGroups" title="Gruppen">👥</button>
+          <button id="navInbox" title="Benachrichtigungen">🔔<div id="bellDot" class="dot" style="display:none"></div></button>
           <button id="navOut" title="Ausloggen">🚪</button>
         </div>
       </div>
@@ -457,6 +514,7 @@ function render(){
     $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
     $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
     $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
+    $('navInbox').onclick=()=>{S.view='inbox';renderContentOnly()};
     $('navOut').onclick=()=>signOut(auth);
   }
   renderContentOnly();

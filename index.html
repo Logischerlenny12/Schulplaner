@@ -263,10 +263,15 @@ function setupLiveSync(){
   });
 }
 
-function nextLesson(subject, from=today()){
+function nextLesson(subject){
+  let now = new Date();
   for(let n=0; n<14; n++){
-    let d=add(from,n), w=wd(d);
-    let l=S.lessons.filter(x=>Number(x.weekday)===w-1).sort((a,b)=>a.period-b.period).find(x=>x.subject?.trim().toLowerCase()===subject?.trim().toLowerCase());
+    let d = add(today(), n);
+    // 8-Uhr-Regel: Wenn n=0 (heute) und es ist >= 8 Uhr, überspringe heute und zähle für die nächste Stunde.
+    if(n === 0 && now.getHours() >= 8) continue;
+    
+    let w = wd(d);
+    let l = S.lessons.filter(x=>Number(x.weekday)===w-1).sort((a,b)=>a.period-b.period).find(x=>x.subject?.trim().toLowerCase()===subject?.trim().toLowerCase());
     if(l) return {date:d, l};
   }
   return null;
@@ -294,12 +299,32 @@ function packHTML(p){
 function bindChecks(){
   document.querySelectorAll('[data-check]').forEach(b=>b.onclick=async()=>{
     let [scope, gId, id] = b.dataset.check.split('|'), nowDone = b.dataset.on!=='true';
+    b.disabled = true;
+    
     if(scope==='personal') {
-      await updateDoc(doc(db,'users',S.u.uid,'homework',id), {done:nowDone});
+      if(nowDone) {
+        // AUTOMATISCH LÖSCHEN (Persönlich)
+        await deleteDoc(doc(db,'users',S.u.uid,'homework',id));
+      } else {
+        await updateDoc(doc(db,'users',S.u.uid,'homework',id), {done:nowDone});
+      }
     } else {
-      await updateDoc(doc(db,'groups',gId,'homework',id), {doneBy: nowDone ? arrayUnion(S.u.uid) : arrayRemove(S.u.uid)});
+      if(nowDone) {
+        await updateDoc(doc(db,'groups',gId,'homework',id), {doneBy: arrayUnion(S.u.uid)});
+        // AUTOMATISCH LÖSCHEN (Gruppe, wenn alle fertig sind)
+        let [hw, mem] = await Promise.all([
+          getDoc(doc(db,'groups',gId,'homework',id)),
+          getDocs(collection(db,'groups',gId,'members'))
+        ]);
+        if(hw.exists() && (hw.data().doneBy?.length || 0) >= mem.size) {
+           await deleteDoc(doc(db,'groups',gId,'homework',id));
+        }
+      } else {
+        await updateDoc(doc(db,'groups',gId,'homework',id), {doneBy: arrayRemove(S.u.uid)});
+      }
     }
   });
+  
   document.querySelectorAll('[data-pack]').forEach(b=>b.onclick=async()=>{
     let id = b.dataset.pack, nowDone = b.dataset.on!=='true';
     await updateDoc(doc(db,'users',S.u.uid,'pack',id), {done:nowDone});

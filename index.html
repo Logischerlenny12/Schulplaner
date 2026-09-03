@@ -364,4 +364,59 @@ function groups(){
   if(S.stopChat){S.stopChat(); S.stopChat=null;}
   if(!S.cls){ $('content').innerHTML='<div class=card><div class=empty>Wähle zuerst eine Klasse.</div></div>'; return; }
   let gs=S.groups.filter(g=>S.gm.has(g.id));
-  $('content').innerHTML=`<div class=card
+  
+  // HIER WAR DEIN CODE ABGESCHNITTEN. 
+  // Korrigierter Abschluss mit minimalem HTML:
+  $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div>${gs.length ? gs.map(g=>'<div class="box"><b>'+esc(g.name)+'</b></div>').join('') : '<div class="empty">Du bist noch in keinen Gruppen.</div>'}</div>`;
+}
+
+// --- FEHLENDE FUNKTIONEN (Platzhalter), DAMIT ES NICHT ABSTÜRZT ---
+function groupView(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Gruppen-Chat</h2></div><div class="empty">Chat-Ansicht folgt...</div></div>'; }
+function inbox(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Posteingang</h2></div><div class="empty">Keine Nachrichten.</div></div>'; }
+function admin(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Admin-Bereich</h2></div><div class="empty">Einstellungen...</div></div>'; }
+function timetable(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Stundenplan</h2></div><div class="empty">Stundenplan folgt...</div></div>'; }
+function hwModal(){ alert("Hausaufgaben-Formular (noch nicht fertig programmiert)"); }
+function packModal(){ alert("Packlisten-Formular (noch nicht fertig programmiert)"); }
+
+function render(){
+  $('root').innerHTML = `
+    <div class="side">
+      <div class="logo">S</div>
+      <div class="nav">
+        <button id="navHome" title="Übersicht">🏠</button>
+        <button id="navPers" title="Persönlich">👤</button>
+        <button id="navTimetable" title="Stundenplan">📅</button>
+        <button id="navGroups" title="Gruppen">👥</button>
+        <button id="navOut" title="Ausloggen">🚪</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="top"><h1>Schulplaner</h1></div>
+      <div id="content"></div>
+    </div>
+  `;
+  
+  $('navHome').onclick=()=>{S.view='home';renderContentOnly()};
+  $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
+  $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
+  $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
+  $('navOut').onclick=()=>signOut(auth);
+  
+  renderContentOnly();
+}
+
+// --- FEHLENDE START-LOGIK ---
+// Das hier prüft, ob du eingeloggt bist, und beendet den Ladebildschirm!
+onAuthStateChanged(auth, user => {
+  if (user) {
+    S.u = user;
+    initApp();
+  } else {
+    S.u = null;
+    authPage();
+  }
+});
+
+</script>
+</body>
+</html>

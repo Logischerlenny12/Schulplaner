@@ -58,7 +58,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -app
 .pack { display: flex; gap: 14px; align-items: center; border: 1px solid var(--line); padding: 14px; border-radius: 14px; background: var(--card); }
 .pack.done { opacity: 0.5; text-decoration: line-through; background: #fafafc; }
 .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-.group { border: 1px solid var(--line); border-radius: 16px; padding: 20px; background: var(--card); }
+.group { border: 1px solid var(--line); border-radius: 16px; padding: 20px; background: var(--card); display: flex; justify-content: space-between; align-items: center;}
 .modalbg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: grid; place-items: center; padding: 20px; z-index: 20; backdrop-filter: blur(4px); }
 .modal { background: var(--card); border-radius: 20px; padding: 30px; width: min(460px, 100%); max-height: 90vh; overflow: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
 .auth { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
@@ -68,22 +68,29 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -app
 .link { background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; padding: 0; font-size: 14px; }
 .msg { padding: 12px; border-radius: 10px; font-size: 14px; margin-bottom: 16px; font-weight: 500; text-align: left; }
 .err { background: #fff0f0; color: #d70015; border: 1px solid #ffcccc; }
-.messages { height: 50vh; overflow: auto; background: #fafafc; border-radius: 16px; padding: 16px; border: 1px solid var(--line); }
-.message { max-width: 75%; padding: 10px 14px; border-radius: 18px; background: #e5e5ea; margin: 8px 0; color: var(--text); position: relative; }
+.messages { height: 50vh; overflow: auto; background: #fafafc; border-radius: 16px; padding: 16px; border: 1px solid var(--line); display:flex; flex-direction:column; gap:8px;}
+.message { width: fit-content; max-width: 75%; padding: 10px 14px; border-radius: 18px; background: #e5e5ea; color: var(--text); position: relative; }
 .message.mine { margin-left: auto; background: var(--accent); color: white; }
 .message small { display: block; opacity: 0.6; font-size: 11px; margin-bottom: 4px; }
-.message img { max-width: 100%; border-radius: 10px; margin-top: 8px; }
 .loading { min-height: 100vh; display: grid; place-items: center; color: var(--muted); font-weight: 600; font-size: 16px; }
 @media(max-width:750px) { .side { width: 60px; } .main { margin-left: 60px; padding: 20px; } .two { grid-template-columns: 1fr; } .top h1 { font-size: 24px; } .authbox { padding: 30px 20px; } }
 </style>
 </head>
 <body>
-<div id="root"><div class="loading">Schulplaner lädt...</div></div><div id="modal"></div>
+<div id="root"><div class="loading" id="loader">Schulplaner lädt...</div></div><div id="modal"></div>
 
 <script type="module">
+const $ = x => document.getElementById(x);
+
+// Arcade-Trick: Optmistisches UI Laden ohne Warten
+if(localStorage.getItem('isLoggedIn') === 'true'){
+  if($('loader')) $('loader').style.display = 'none';
+  render(); // Zeichnet sofort das Gerüst
+}
+
 import{initializeApp}from'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
 import{getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,setPersistence,browserLocalPersistence}from'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
-import{getFirestore,collection,doc,getDoc,getDocs,setDoc,addDoc,updateDoc,deleteDoc,query,where,orderBy,limitToLast,onSnapshot,serverTimestamp,arrayUnion}from'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
+import{getFirestore,collection,doc,getDoc,getDocs,setDoc,addDoc,updateDoc,deleteDoc,query,where,orderBy,limitToLast,onSnapshot,serverTimestamp,arrayUnion,arrayRemove}from'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
 const firebaseConfig={
   apiKey:"AIzaSyDufHoBggthiPADhYfpNN6Q6ZGH1FNooD0",
@@ -98,12 +105,10 @@ const app=initializeApp(firebaseConfig);
 const auth=getAuth(app);
 const db=getFirestore(app);
 
-// Sorgt dafür, dass man angemeldet bleibt
 setPersistence(auth, browserLocalPersistence).catch(console.error);
 
-// State-Management (mit Listeners für Live-Sync)
 const S={u:null, ud:null, view:'home', classes:[], cls:null, lessons:[], hwPersonal:[], hwGroup:[], pack:[], groups:[], gm:new Set(), inv:[], chat:null, stopChat:null, unsubs:[], mode:'login'};
-const $=x=>document.getElementById(x), esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today=()=>new Date().toISOString().slice(0,10), add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)}, wd=d=>new Date(d+'T12:00:00').getDay(), fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
 
 function err(e){return esc(e?.message||e)}
@@ -112,9 +117,22 @@ function cad(){return sys()||!!S.cls?.adminIds?.includes(S.u.uid)}
 function clearListeners(){ S.unsubs.forEach(u=>u()); S.unsubs=[]; if(S.stopChat){S.stopChat();S.stopChat=null;} }
 function getAllHw(){ return [...S.hwPersonal, ...S.hwGroup]; }
 
-// -----------------------------------------------------
-// LOGIN & REGISTER
-// -----------------------------------------------------
+// Wichtig: Prüft, ob Hausaufgabe abgehakt ist (Privat = bool, Gruppe = ist meine UID im Array?)
+function isHwDone(h){ return h.scope==='group' ? h.doneBy?.includes(S.u.uid) : !!h.done; }
+
+onAuthStateChanged(auth, user => {
+  if (user) {
+    localStorage.setItem('isLoggedIn', 'true');
+    S.u = user;
+    if($('loader')) $('loader').style.display = 'none';
+    initApp();
+  } else {
+    localStorage.removeItem('isLoggedIn');
+    S.u = null;
+    authPage();
+  }
+});
+
 function authPage(){
   let l=S.mode==='login';
   $('root').innerHTML=`<div class=auth><div class=authbox>
@@ -138,13 +156,11 @@ function authPage(){
     btn.disabled=true; btn.textContent='Bitte warten...'; $('am').innerHTML='';
     try{
       let email=$('email').value.trim(), pw=$('pw').value;
-      if(l) {
-        await signInWithEmailAndPassword(auth,email,pw);
-      } else {
+      if(l) await signInWithEmailAndPassword(auth,email,pw);
+      else {
         if(pw!==$('pw2').value)throw Error('Passwörter stimmen nicht überein.');
         let r = await createUserWithEmailAndPassword(auth,email,pw);
         let name = $('name').value.trim();
-        // Lege den User sofort an
         await setDoc(doc(db,'users',r.user.uid), {name, email, systemAdmin:false, packMode:'evening', createdAt:serverTimestamp()});
         await setDoc(doc(db,'profiles',r.user.uid), {name, email});
       }
@@ -155,27 +171,17 @@ function authPage(){
   }
 }
 
-// -----------------------------------------------------
-// INIT DATEN & SELBSTHEILUNG
-// -----------------------------------------------------
 async function initApp(){
   try{
     let us = await getDoc(doc(db,'users',S.u.uid));
-    
-    // SELBSTHEILUNG: Wenn Auth existiert, aber Datenbank-Eintrag fehlt (Fehler beim Registrieren),
-    // erstellen wir ihn jetzt neu, statt den User rauszuschmeißen!
     if(!us.exists()){
-       console.log("Führe Account-Selbstheilung durch...");
-       let email = S.u.email;
-       let name = email.split('@')[0]; // Fallback Name
+       let email = S.u.email, name = email.split('@')[0];
        await setDoc(doc(db,'users',S.u.uid), {name, email, systemAdmin:false, packMode:'evening', createdAt:serverTimestamp()});
        await setDoc(doc(db,'profiles',S.u.uid), {name, email});
        us = await getDoc(doc(db,'users',S.u.uid));
     }
-    
     S.ud = us.data();
     
-    // Klassen laden
     let a=await getDocs(query(collection(db,'classes'),where('memberIds','array-contains',S.u.uid)));
     let b=await getDocs(query(collection(db,'classes'),where('adminIds','array-contains',S.u.uid)));
     let m=new Map();
@@ -184,84 +190,51 @@ async function initApp(){
     S.cls = S.classes.find(x=>x.id===localStorage.cls) || S.classes[0] || null;
     if(S.cls) localStorage.cls = S.cls.id; else localStorage.removeItem('cls');
     
-    setupLiveSync(); // Startet Echtzeit-Abgleich
-
+    setupLiveSync();
   } catch(e) {
-    $('root').innerHTML=`<div class=auth><div class=authbox><h2>Datenbank-Fehler</h2><div class="msg err">Bitte prüfe deine Firebase Security Rules. Fehler: ${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
+    $('root').innerHTML=`<div class=auth><div class=authbox><h2>Datenbank-Fehler</h2><div class="msg err">${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
     $('loErr').onclick=()=>signOut(auth);
   }
 }
 
-// -----------------------------------------------------
-// ECHTZEIT SYNC (onSnapshot)
-// -----------------------------------------------------
 function setupLiveSync(){
   clearListeners();
-  
-  // 1. Eigene Hausaufgaben Live
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'homework'), s=>{
-    S.hwPersonal = s.docs.map(d=>({id:d.id, scope:'personal', ...d.data()}));
-    renderContentOnly();
+    S.hwPersonal = s.docs.map(d=>({id:d.id, scope:'personal', ...d.data()})); renderContentOnly();
   }));
-  
-  // 2. Eigene Packliste Live
   S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'pack'), s=>{
-    S.pack = s.docs.map(d=>({id:d.id, ...d.data()}));
-    renderContentOnly();
+    S.pack = s.docs.map(d=>({id:d.id, ...d.data()})); renderContentOnly();
   }));
-  
-  // 3. User-Daten Live (für Pack-Modus Änderungen)
   S.unsubs.push(onSnapshot(doc(db,'users',S.u.uid), s=>{
     if(s.exists()){ S.ud = s.data(); renderContentOnly(); }
   }));
+  if(!S.cls) { render(); return; }
 
-  // 4. Einladungen Live
-  S.unsubs.push(onSnapshot(query(collection(db,'groupInvites'),where('toUid','==',S.u.uid)), s=>{
-    S.inv = s.docs.map(d=>({id:d.id, ...d.data()})).filter(x=>x.status==='pending');
-    renderContentOnly();
-  }));
-
-  if(!S.cls) {
-    render(); // Komplettes UI laden (Klasse fehlt Screen)
-    return;
-  }
-
-  // 5. Stundenplan Live
+  // Stundenplan der Klasse synchronisieren
   S.unsubs.push(onSnapshot(collection(db,'classes',S.cls.id,'lessons'), s=>{
-    S.lessons = s.docs.map(d=>({id:d.id, ...d.data()}));
-    renderContentOnly();
+    S.lessons = s.docs.map(d=>({id:d.id, ...d.data()})); renderContentOnly();
   }));
 
-  // 6. Gruppen laden und Live Gruppen-Hausaufgaben
   getDocs(query(collection(db,'groups'),where('classId','==',S.cls.id))).then(async gDocs => {
     S.groups = gDocs.docs.map(d=>({id:d.id, ...d.data()}));
     S.gm = new Set();
-    
-    // Prüfen in welchen Gruppen man ist
     for(let x of S.groups){
       let mDoc = await getDoc(doc(db,'groups',x.id,'members',S.u.uid));
       if(mDoc.exists()) S.gm.add(x.id);
     }
-    
-    // Echtzeit Listener für Hausaufgaben jeder Gruppe in der man ist
-    S.hwGroup = []; // Reset
+    S.hwGroup = [];
     for(let groupId of S.gm){
       let groupName = S.groups.find(x=>x.id===groupId).name;
       S.unsubs.push(onSnapshot(collection(db,'groups',groupId,'homework'), s=>{
-        // Entferne alte Hws dieser Gruppe aus dem Array
         S.hwGroup = S.hwGroup.filter(h => h.groupId !== groupId);
-        // Füge aktuelle Hws hinzu
         s.forEach(d => S.hwGroup.push({id:d.id, scope:'group', groupId, groupName, ...d.data()}));
         renderContentOnly();
       }));
     }
-    render(); // Komplettes UI laden
+    render();
   });
 }
 
-// -----------------------------------------------------
-// LOGIK & HELFER
-// -----------------------------------------------------
 function nextLesson(subject, from=today()){
   for(let n=0; n<14; n++){
     let d=add(from,n), w=wd(d);
@@ -271,43 +244,41 @@ function nextLesson(subject, from=today()){
   return null;
 }
 function getDueDate(subject){ let n=nextLesson(subject); return n?n.date:'9999'; }
-function urgent(h){ if(h.done)return false; let n=nextLesson(h.subject); return n&&(n.date===today()||n.date===add(today(),1)); }
+function urgent(h){ if(isHwDone(h))return false; let n=nextLesson(h.subject); return n&&(n.date===today()||n.date===add(today(),1)); }
 function packDueTomorrow(x){ return x.date===add(today(),1) || x.repeatDays?.includes(wd(add(today(),1))); }
 function packDueToday(x){ return x.date===today() || x.repeatDays?.includes(wd(today())); }
 function packForNow(list){ return list.filter(x=>(x.mode==='morning'&&packDueToday(x))||(x.mode!=='morning'&&packDueTomorrow(x))); }
 
 function taskHTML(h){
-  let d=getDueDate(h.subject);
-  return `<div class="task ${urgent(h)?'urgent':''}${h.done?'done':''}">
-    <button class="check ${h.done?'on':''}" data-check="${h.scope}|${h.groupId\vert{}\vert{}''}\vert{}${h.id}" data-on="${!!h.done}">${h.done?'✓':''}</button>
+  let d=getDueDate(h.subject), done = isHwDone(h);
+  return `<div class="task ${urgent(h)?'urgent':''}${done?'done':''}">
+    <button class="check ${done?'on':''}" data-check="${h.scope}|${h.groupId||''}|${h.id}" data-on="${done}">${done?'✓':''}</button>
     <div class=taskmain><b>${esc(h.subject)} – ${esc(h.task)}</b><div class=muted>${d!=='9999'?fmt(d):'Nächste Stunde nicht im Plan'} · <span class="badge ${h.scope==='group'?'group':''}">${h.scope==='group'?'👥 '+esc(h.groupName):'Persönlich'}</span></div></div>
   </div>`;
 }
 function packHTML(p){
   return `<div class="pack ${p.done?'done':''}">
-    <button class="check ${p.done?'on':''}" data-pack="${p.scope||'personal'}|${p.groupId\vert{}\vert{}''}\vert{}${p.id}" data-on="${!!p.done}">${p.done?'✓':''}</button>
-    <div><b>${esc(p.item)}</b><div class=muted>${p.repeatDays?.length?'Wiederholt: '+p.repeatDays.map(x=>['So','Mo','Di','Mi','Do','Fr','Sa'][x]).join(', '):p.date?fmt(p.date):'Einmalig'} · ${p.mode==='morning'?'morgens':'abends vorher'}</div></div>
+    <button class="check ${p.done?'on':''}" data-pack="${p.id}" data-on="${!!p.done}">${p.done?'✓':''}</button>
+    <div><b>${esc(p.item)}</b><div class=muted>${p.date?fmt(p.date):'Immer'} · ${p.mode==='morning'?'morgens':'abends vorher'}</div></div>
   </div>`;
 }
 
 function bindChecks(){
   document.querySelectorAll('[data-check]').forEach(b=>b.onclick=async()=>{
-    let [scope, gId, id] = b.dataset.check.split('|');
-    let nowDone = b.dataset.on!=='true';
-    let path = scope==='personal' ? doc(db,'users',S.u.uid,'homework',id) : doc(db,'groups',gId,'homework',id);
-    await updateDoc(path, {done:nowDone}); // UI updatet sich automatisch dank onSnapshot
+    let [scope, gId, id] = b.dataset.check.split('|'), nowDone = b.dataset.on!=='true';
+    if(scope==='personal') {
+      await updateDoc(doc(db,'users',S.u.uid,'homework',id), {done:nowDone});
+    } else {
+      // Gruppen-HW: Füge mich ins doneBy Array hinzu oder entferne mich (nur lokal für mich abgehakt)
+      await updateDoc(doc(db,'groups',gId,'homework',id), {doneBy: nowDone ? arrayUnion(S.u.uid) : arrayRemove(S.u.uid)});
+    }
   });
   document.querySelectorAll('[data-pack]').forEach(b=>b.onclick=async()=>{
-    let [scope, gId, id] = b.dataset.pack.split('|');
-    let nowDone = b.dataset.on!=='true';
-    let path = scope==='personal' ? doc(db,'users',S.u.uid,'pack',id) : doc(db,'groups',gId,'pack',id);
-    await updateDoc(path, {done:nowDone}); // UI updatet sich automatisch dank onSnapshot
+    let id = b.dataset.pack, nowDone = b.dataset.on!=='true';
+    await updateDoc(doc(db,'users',S.u.uid,'pack',id), {done:nowDone});
   });
 }
 
-// -----------------------------------------------------
-// VIEWS (Werden bei Änderungen aufgerufen)
-// -----------------------------------------------------
 function grouped(a){
   if(!a.length) return '<div class=empty>Keine weiteren offenen Aufgaben.</div>';
   let m={}; a.forEach(x=>{let d=getDueDate(x.subject);(m[d]??=[]).push(x)});
@@ -315,24 +286,21 @@ function grouped(a){
 }
 
 function renderContentOnly(){
-  if(!$('content')) return; // Wenn UI noch nicht aufgebaut ist
+  if(!$('content')) return;
   if(S.view==='home') home();
   if(S.view==='timetable') timetable();
   if(S.view==='homework') homeworkView();
   if(S.view==='pack') packView();
   if(S.view==='personal') personal();
-  if(S.view==='groups') { if(S.chat) groupView(); else groups(); }
-  if(S.view==='inbox') inbox();
-  if(S.view==='admin') admin();
+  if(S.view==='groups') groups();
   bindChecks();
 }
 
 function home(){
   let d=today(), ls=S.lessons.filter(x=>Number(x.weekday)===wd(d)-1).sort((a,b)=>a.period-b.period);
-  let allHw = getAllHw();
-  let due=allHw.filter(urgent), rest=allHw.filter(x=>!x.done&&!urgent(x)), p=packForNow(S.pack);
+  let allHw = getAllHw(), due=allHw.filter(urgent), rest=allHw.filter(x=>!isHwDone(x)&&!urgent(x)), p=packForNow(S.pack);
   $('content').innerHTML=`
-    <div class=card><div class=title><h2>📅 ${fmt(d)}</h2></div>${ls.length?`<div class=grid>${ls.map(x=>`<div class=lesson><small class=muted>${x.period}. Stunde · ${esc(x.time\vert{}\vert{}'')}</small><strong>${esc(x.subject)}</strong><small class=muted>${esc(x.teacher\vert{}\vert{}'')}${esc(x.room||'')}</small></div>`).join('')}</div>`:'<div class=empty>Kein Stundenplan für heute.</div>'}</div>
+    <div class=card><div class=title><h2>📅 ${fmt(d)}</h2></div>${ls.length?`<div class=grid>${ls.map(x=>`<div class=lesson><small class=muted>${x.period}. Stunde</small><strong>${esc(x.subject)}</strong></div>`).join('')}</div>`:'<div class=empty>Kein Stundenplan für heute.</div>'}</div>
     <div class=card><div class=title><h2>🔴 Jetzt fällig</h2><span class="badge red">${due.length}</span></div>${due.length?`<div class=tasks>${due.map(taskHTML).join('')}</div>`:'<div class=empty>Alles erledigt.</div>'}</div>
     <div class=card><div class=title><h2>📚 Weitere Hausaufgaben</h2><button class="btn primary" id=ah>+ Neu</button></div>${grouped(rest)}</div>
     <div class=card><div class=title><h2>🎒 Packen</h2><button class="btn primary" id=ap>+ Sache</button></div>${p.length?`<div class=tasks>${p.map(packHTML).join('')}</div>`:'<div class=empty>Nichts zu packen für jetzt.</div>'}</div>
@@ -341,7 +309,7 @@ function home(){
 }
 
 function homeworkView(){
-  $('content').innerHTML=`<div class=card><div class=title><h2>Meine Hausaufgaben</h2><button class="btn primary" id=ah>+ Neu</button></div>${grouped(S.hwPersonal.filter(x=>!x.done))}</div>`;
+  $('content').innerHTML=`<div class=card><div class=title><h2>Alle Hausaufgaben</h2><button class="btn primary" id=ah>+ Neu</button></div>${grouped(getAllHw().filter(x=>!isHwDone(x)))}</div>`;
   $('ah').onclick=()=>hwModal();
 }
 
@@ -355,68 +323,144 @@ function packView(){
 
 function personal(){
   $('content').innerHTML=`<div class=card><div class=title><h2>👤 Persönlich</h2><div class=actions><button class="btn primary" id=ph>+ Hausaufgabe</button><button class="btn primary" id=pp>+ Packliste</button></div></div><p class=muted>Nur du kannst diese Inhalte sehen.</p></div>
-  <div class=card><h2>Hausaufgaben</h2>${grouped(S.hwPersonal.filter(x=>!x.done))}</div>
+  <div class=card><h2>Hausaufgaben</h2>${grouped(S.hwPersonal.filter(x=>!isHwDone(x)))}</div>
   <div class=card><h2>Packliste</h2><div class=tasks>${S.pack.map(packHTML).join('')||'<div class=empty>Noch nichts.</div>'}</div></div>`;
   $('ph').onclick=()=>hwModal(); $('pp').onclick=()=>packModal();
 }
 
+// Admin / Stundenplan
+function timetable(){
+  if(!S.cls){ $('content').innerHTML='<div class="empty">Klasse fehlt.</div>'; return; }
+  $('content').innerHTML=`<div class=card><div class=title><h2>Stundenplan (${esc(S.cls.name)})</h2>${cad()?'<button class="btn primary" id=ntl>+ Stunde</button>':''}</div>
+  <div class=grid>${S.lessons.sort((a,b)=>a.weekday-b.weekday || a.period-b.period).map(x=>`<div class=lesson><small class=muted>Tag ${Number(x.weekday)+1} · ${x.period}. Std</small><strong>${esc(x.subject)}</strong></div>`).join('')||'<div class="empty">Stundenplan ist leer.</div>'}</div></div>`;
+  
+  if(cad()){
+    $('ntl').onclick=async()=>{
+      let s = prompt("Fach? (z.B. Mathe)"); if(!s) return;
+      let w = prompt("Welcher Tag? (0=Mo, 1=Di, 2=Mi, 3=Do, 4=Fr)"); if(!w) return;
+      let p = prompt("Welche Schulstunde? (1-10)"); if(!p) return;
+      await addDoc(collection(db,'classes',S.cls.id,'lessons'), {subject:s, weekday:Number(w), period:Number(p)});
+    }
+  }
+}
+
+// Gruppen Übersicht
 function groups(){
-  if(S.stopChat){S.stopChat(); S.stopChat=null;}
   if(!S.cls){ $('content').innerHTML='<div class=card><div class=empty>Wähle zuerst eine Klasse.</div></div>'; return; }
   let gs=S.groups.filter(g=>S.gm.has(g.id));
-  
-  // HIER WAR DEIN CODE ABGESCHNITTEN. 
-  // Korrigierter Abschluss mit minimalem HTML:
-  $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div>${gs.length ? gs.map(g=>'<div class="box"><b>'+esc(g.name)+'</b></div>').join('') : '<div class="empty">Du bist noch in keinen Gruppen.</div>'}</div>`;
+  $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div><div class="groups">${gs.length ? gs.map(g=>`<div class="group"><b>${esc(g.name)}</b><button class="btn primary small" data-chat="${g.id}">Chat öffnen</button></div>`).join('') : '<div class="empty">Du bist in keinen Gruppen.</div>'}</div></div>`;
+  document.querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>groupChat(b.dataset.chat));
 }
 
-// --- FEHLENDE FUNKTIONEN (Platzhalter), DAMIT ES NICHT ABSTÜRZT ---
-function groupView(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Gruppen-Chat</h2></div><div class="empty">Chat-Ansicht folgt...</div></div>'; }
-function inbox(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Posteingang</h2></div><div class="empty">Keine Nachrichten.</div></div>'; }
-function admin(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Admin-Bereich</h2></div><div class="empty">Einstellungen...</div></div>'; }
-function timetable(){ $('content').innerHTML='<div class="card"><div class="title"><h2>Stundenplan</h2></div><div class="empty">Stundenplan folgt...</div></div>'; }
-function hwModal(){ alert("Hausaufgaben-Formular (noch nicht fertig programmiert)"); }
-function packModal(){ alert("Packlisten-Formular (noch nicht fertig programmiert)"); }
+// Live Gruppen-Chat
+function groupChat(gId){
+   S.view='chat';
+   let g = S.groups.find(x=>x.id===gId);
+   $('content').innerHTML=`<div class=card><div class=title><button class="btn small" id=bk>Zurück</button><h2>Chat: ${esc(g.name)}</h2></div><div class=messages id=msgs></div>
+   <form id=cf style="display:flex;gap:10px;margin-top:15px;"><input id=cm style="flex:1" class="field input" autocomplete="off" placeholder="Nachricht..."><button class="btn primary">Senden</button></form></div>`;
+   
+   $('bk').onclick=()=>{S.view='groups'; renderContentOnly()};
+   if(S.stopChat) S.stopChat();
+   S.stopChat = onSnapshot(query(collection(db,'groups',gId,'messages'),orderBy('ts','desc'),limitToLast(50)), s=>{
+      $('msgs').innerHTML = s.docs.reverse().map(d=>{
+         let m = d.data(), mine = m.uid===S.u.uid;
+         return `<div class="message ${mine?'mine':''}"><small>${mine?'Du':esc(m.name)}</small>${esc(m.text)}</div>`;
+      }).join('');
+      $('msgs').scrollTop = $('msgs').scrollHeight;
+   });
+   
+   $('cf').onsubmit=async e=>{
+      e.preventDefault();
+      let t = $('cm').value.trim(); if(!t) return;
+      $('cm').value='';
+      await addDoc(collection(db,'groups',gId,'messages'), {uid:S.u.uid, name:S.ud.name, text:t, ts:serverTimestamp()});
+   };
+}
+
+// Modals für Neue Einträge
+function hwModal(){
+  $('modal').innerHTML = `
+  <div class="modalbg" id="mbg">
+    <div class="modal">
+      <h2>Neue Hausaufgabe</h2>
+      <form id="hwf" class="form">
+        <div class="field"><label>Fach</label><input id="hws" required placeholder="z.B. Mathe"></div>
+        <div class="field"><label>Aufgabe</label><input id="hwt" required placeholder="S. 12 Nr. 3"></div>
+        <div class="field"><label>Für wen?</label>
+          <select id="hwg">
+            <option value="personal">Nur für mich (Persönlich)</option>
+            ${S.groups.filter(g=>S.gm.has(g.id)).map(g=>`<option value="${g.id}">Gruppe: ${esc(g.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="actions"><button type="submit" class="btn primary">Speichern</button><button type="button" class="btn" id="mcl">Abbrechen</button></div>
+      </form>
+    </div>
+  </div>`;
+  $('mcl').onclick=()=>$('modal').innerHTML='';
+  $('mbg').onclick=e=>{if(e.target.id==='mbg')$('modal').innerHTML=''}
+  $('hwf').onsubmit=async e=>{
+    e.preventDefault();
+    let g = $('hwg').value, s = $('hws').value.trim(), t = $('hwt').value.trim();
+    if(g==='personal') await addDoc(collection(db,'users',S.u.uid,'homework'), {subject:s, task:t, done:false, createdAt:serverTimestamp()});
+    else await addDoc(collection(db,'groups',g,'homework'), {subject:s, task:t, doneBy:[], createdAt:serverTimestamp()}); // Startet mit leerem doneBy Array!
+    $('modal').innerHTML='';
+  }
+}
+
+function packModal(){
+  $('modal').innerHTML = `
+  <div class="modalbg" id="mbg">
+    <div class="modal">
+      <h2>Packliste Eintrag</h2>
+      <form id="pf" class="form">
+        <div class="field"><label>Sache</label><input id="pi" required placeholder="z.B. Sportzeug"></div>
+        <div class="field"><label>Erinnerung</label>
+          <select id="pm">
+            <option value="${S.ud.packMode||'evening'}">Standard (${S.ud.packMode==='morning'?'Morgens':'Abends'})</option>
+            <option value="morning">Immer Morgens</option>
+            <option value="evening">Immer Abends vorher</option>
+          </select>
+        </div>
+        <div class="field"><label>Datum (Optional)</label><input type="date" id="pd"></div>
+        <div class="actions"><button type="submit" class="btn primary">Speichern</button><button type="button" class="btn" id="mcl">Abbrechen</button></div>
+      </form>
+    </div>
+  </div>`;
+  $('mcl').onclick=()=>$('modal').innerHTML='';
+  $('mbg').onclick=e=>{if(e.target.id==='mbg')$('modal').innerHTML=''}
+  $('pf').onsubmit=async e=>{
+    e.preventDefault();
+    await addDoc(collection(db,'users',S.u.uid,'pack'), {item: $('pi').value.trim(), mode: $('pm').value, date: $('pd').value||null, done:false});
+    $('modal').innerHTML='';
+  }
+}
 
 function render(){
-  $('root').innerHTML = `
-    <div class="side">
-      <div class="logo">S</div>
-      <div class="nav">
-        <button id="navHome" title="Übersicht">🏠</button>
-        <button id="navPers" title="Persönlich">👤</button>
-        <button id="navTimetable" title="Stundenplan">📅</button>
-        <button id="navGroups" title="Gruppen">👥</button>
-        <button id="navOut" title="Ausloggen">🚪</button>
+  if(!$('root').innerHTML.includes('class="side"')) {
+    $('root').innerHTML = `
+      <div class="side">
+        <div class="logo">S</div>
+        <div class="nav">
+          <button id="navHome" title="Übersicht">🏠</button>
+          <button id="navPers" title="Persönlich">👤</button>
+          <button id="navTimetable" title="Stundenplan">📅</button>
+          <button id="navGroups" title="Gruppen">👥</button>
+          <button id="navOut" title="Ausloggen">🚪</button>
+        </div>
       </div>
-    </div>
-    <div class="main">
-      <div class="top"><h1>Schulplaner</h1></div>
-      <div id="content"></div>
-    </div>
-  `;
-  
-  $('navHome').onclick=()=>{S.view='home';renderContentOnly()};
-  $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
-  $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
-  $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
-  $('navOut').onclick=()=>signOut(auth);
-  
+      <div class="main">
+        <div class="top"><h1>Schulplaner</h1></div>
+        <div id="content"></div>
+      </div>
+    `;
+    $('navHome').onclick=()=>{S.view='home';renderContentOnly()};
+    $('navPers').onclick=()=>{S.view='personal';renderContentOnly()};
+    $('navTimetable').onclick=()=>{S.view='timetable';renderContentOnly()};
+    $('navGroups').onclick=()=>{S.view='groups';renderContentOnly()};
+    $('navOut').onclick=()=>signOut(auth);
+  }
   renderContentOnly();
 }
-
-// --- FEHLENDE START-LOGIK ---
-// Das hier prüft, ob du eingeloggt bist, und beendet den Ladebildschirm!
-onAuthStateChanged(auth, user => {
-  if (user) {
-    S.u = user;
-    initApp();
-  } else {
-    S.u = null;
-    authPage();
-  }
-});
-
 </script>
 </body>
 </html>

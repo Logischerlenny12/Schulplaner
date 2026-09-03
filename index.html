@@ -98,47 +98,55 @@ const app=initializeApp(firebaseConfig);
 const auth=getAuth(app);
 const db=getFirestore(app);
 
+// Sorgt dafür, dass man angemeldet bleibt
 setPersistence(auth, browserLocalPersistence).catch(console.error);
 
-const S={u:null,ud:null,view:'home',classes:[],cls:null,lessons:[],hw:[],pack:[],groups:[],gm:new Set(),inv:[],chat:null,stop:null,mode:'login'};
-const $=x=>document.getElementById(x),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const today=()=>new Date().toISOString().slice(0,10),add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)},wd=d=>new Date(d+'T12:00:00').getDay(),fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
+// State-Management (mit Listeners für Live-Sync)
+const S={u:null, ud:null, view:'home', classes:[], cls:null, lessons:[], hwPersonal:[], hwGroup:[], pack:[], groups:[], gm:new Set(), inv:[], chat:null, stopChat:null, unsubs:[], mode:'login'};
+const $=x=>document.getElementById(x), esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const today=()=>new Date().toISOString().slice(0,10), add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)}, wd=d=>new Date(d+'T12:00:00').getDay(), fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
 
 function err(e){return esc(e?.message||e)}
 function sys(){return!!S.ud?.systemAdmin}
 function cad(){return sys()||!!S.cls?.adminIds?.includes(S.u.uid)}
-function stopChat(){if(S.stop){S.stop();S.stop=null}}
+function clearListeners(){ S.unsubs.forEach(u=>u()); S.unsubs=[]; if(S.stopChat){S.stopChat();S.stopChat=null;} }
+function getAllHw(){ return [...S.hwPersonal, ...S.hwGroup]; }
 
+// -----------------------------------------------------
+// LOGIN & REGISTER
+// -----------------------------------------------------
 function authPage(){
   let l=S.mode==='login';
   $('root').innerHTML=`<div class=auth><div class=authbox>
   <h1>Schulplaner</h1>
   <p class=subtitle>${l?'Bitte melde dich an.':'Erstelle einen neuen Account.'}</p>
   <form id=af class=form style="text-align:left">
-    ${!l?'<div class=field><label>Name</label><input id=name required></div>':''}
-    <div class=field><label>E-Mail</label><input id=email type=email required></div>
-    <div class=field><label>Passwort</label><input id=pw type=password minlength=6 required></div>
+    ${!l?'<div class=field><label>Dein Name</label><input id=name required></div>':''}
+    <div class=field><label>E-Mail</label><input id=email type=email required autocomplete="email"></div>
+    <div class=field><label>Passwort</label><input id=pw type=password minlength=6 required autocomplete="current-password"></div>
     ${!l?'<div class=field><label>Passwort wiederholen</label><input id=pw2 type=password minlength=6 required></div>':''}
     <div id=am></div>
     <button class="btn primary" style="width:100%;margin-top:10px;height:48px;font-size:16px">${l?'Anmelden':'Registrieren'}</button>
   </form>
-  <p class=muted style="margin-top:25px">${l?'Neu hier?':'Schon dabei?'} <button class=link id=sw>${l?'Jetzt registrieren':'Zum Login'}</button></p>
+  <p class=muted style="margin-top:25px">${l?'Neu hier?':'Schon dabei?'} <button class=link id=sw type="button">${l?'Jetzt registrieren':'Zum Login'}</button></p>
   </div></div>`;
+  
   $('sw').onclick=()=>{S.mode=l?'register':'login';authPage()};
   $('af').onsubmit=async e=>{
     e.preventDefault();
     let btn=e.target.querySelector('button');
     btn.disabled=true; btn.textContent='Bitte warten...'; $('am').innerHTML='';
     try{
-      let email=$('email').value.trim(),pw=$('pw').value;
+      let email=$('email').value.trim(), pw=$('pw').value;
       if(l) {
         await signInWithEmailAndPassword(auth,email,pw);
       } else {
         if(pw!==$('pw2').value)throw Error('Passwörter stimmen nicht überein.');
-        let r=await createUserWithEmailAndPassword(auth,email,pw);
-        let name=$('name').value.trim();
-        await setDoc(doc(db,'users',r.user.uid),{name,email,systemAdmin:false,packMode:'evening',createdAt:serverTimestamp()});
-        await setDoc(doc(db,'profiles',r.user.uid),{name,email});
+        let r = await createUserWithEmailAndPassword(auth,email,pw);
+        let name = $('name').value.trim();
+        // Lege den User sofort an
+        await setDoc(doc(db,'users',r.user.uid), {name, email, systemAdmin:false, packMode:'evening', createdAt:serverTimestamp()});
+        await setDoc(doc(db,'profiles',r.user.uid), {name, email});
       }
     }catch(e){
       $('am').innerHTML=`<div class="msg err">${err(e)}</div>`;
@@ -147,61 +155,213 @@ function authPage(){
   }
 }
 
-async function load(){
+// -----------------------------------------------------
+// INIT DATEN & SELBSTHEILUNG
+// -----------------------------------------------------
+async function initApp(){
   try{
-    let us = null;
-    let attempts = 0;
+    let us = await getDoc(doc(db,'users',S.u.uid));
     
-    // Polling-System, um das Lade-Problem (Race Condition) endgültig zu beheben
-    while(attempts < 6) {
-      let snap = await getDoc(doc(db,'users',S.u.uid));
-      if(snap.exists()) { us = snap; break; }
-      await new Promise(r => setTimeout(r, 500)); // halbe Sekunde warten
-      attempts++;
-    }
-
-    if(!us || !us.exists()){
-      $('root').innerHTML=`<div class=auth><div class=authbox><h2>Fehler bei Registrierung</h2><p class="msg err">Datenbankeintrag konnte nicht schnell genug erstellt werden. Bitte logge dich neu ein.</p><button class="btn red" id=loErr>Ausloggen & Neu laden</button></div></div>`;
-      $('loErr').onclick=()=>signOut(auth);
-      return;
+    // SELBSTHEILUNG: Wenn Auth existiert, aber Datenbank-Eintrag fehlt (Fehler beim Registrieren),
+    // erstellen wir ihn jetzt neu, statt den User rauszuschmeißen!
+    if(!us.exists()){
+       console.log("Führe Account-Selbstheilung durch...");
+       let email = S.u.email;
+       let name = email.split('@')[0]; // Fallback Name
+       await setDoc(doc(db,'users',S.u.uid), {name, email, systemAdmin:false, packMode:'evening', createdAt:serverTimestamp()});
+       await setDoc(doc(db,'profiles',S.u.uid), {name, email});
+       us = await getDoc(doc(db,'users',S.u.uid));
     }
     
-    S.ud=us.data();
-    let a=await getDocs(query(collection(db,'classes'),where('memberIds','array-contains',S.u.uid))),b=await getDocs(query(collection(db,'classes'),where('adminIds','array-contains',S.u.uid))),m=new Map();
+    S.ud = us.data();
+    
+    // Klassen laden
+    let a=await getDocs(query(collection(db,'classes'),where('memberIds','array-contains',S.u.uid)));
+    let b=await getDocs(query(collection(db,'classes'),where('adminIds','array-contains',S.u.uid)));
+    let m=new Map();
     [...a.docs,...b.docs].forEach(d=>m.set(d.id,{id:d.id,...d.data()}));
-    S.classes=[...m.values()];
-    S.cls=S.classes.find(x=>x.id===localStorage.cls)||S.classes[0]||null;
-    if(S.cls)localStorage.cls=S.cls.id;else localStorage.removeItem('cls');
-    await classData();
-    render();
+    S.classes = [...m.values()];
+    S.cls = S.classes.find(x=>x.id===localStorage.cls) || S.classes[0] || null;
+    if(S.cls) localStorage.cls = S.cls.id; else localStorage.removeItem('cls');
+    
+    setupLiveSync(); // Startet Echtzeit-Abgleich
+
   } catch(e) {
-    $('root').innerHTML=`<div class=auth><div class=authbox><h2>Systemfehler!</h2><div class="msg err">Datenbank blockiert oder fehlerhaft. <br><br>${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
+    $('root').innerHTML=`<div class=auth><div class=authbox><h2>Datenbank-Fehler</h2><div class="msg err">Bitte prüfe deine Firebase Security Rules. Fehler: ${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
     $('loErr').onclick=()=>signOut(auth);
   }
 }
 
-async function classData(){
-  S.lessons=[];S.hw=[];S.pack=[];S.groups=[];S.gm=new Set();S.inv=[];
-  if(!S.cls){
-    let i=await getDocs(query(collection(db,'groupInvites'),where('toUid','==',S.u.uid)));
-    S.inv=i.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==='pending');
+// -----------------------------------------------------
+// ECHTZEIT SYNC (onSnapshot)
+// -----------------------------------------------------
+function setupLiveSync(){
+  clearListeners();
+  
+  // 1. Eigene Hausaufgaben Live
+  S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'homework'), s=>{
+    S.hwPersonal = s.docs.map(d=>({id:d.id, scope:'personal', ...d.data()}));
+    renderContentOnly();
+  }));
+  
+  // 2. Eigene Packliste Live
+  S.unsubs.push(onSnapshot(collection(db,'users',S.u.uid,'pack'), s=>{
+    S.pack = s.docs.map(d=>({id:d.id, ...d.data()}));
+    renderContentOnly();
+  }));
+  
+  // 3. User-Daten Live (für Pack-Modus Änderungen)
+  S.unsubs.push(onSnapshot(doc(db,'users',S.u.uid), s=>{
+    if(s.exists()){ S.ud = s.data(); renderContentOnly(); }
+  }));
+
+  // 4. Einladungen Live
+  S.unsubs.push(onSnapshot(query(collection(db,'groupInvites'),where('toUid','==',S.u.uid)), s=>{
+    S.inv = s.docs.map(d=>({id:d.id, ...d.data()})).filter(x=>x.status==='pending');
+    renderContentOnly();
+  }));
+
+  if(!S.cls) {
+    render(); // Komplettes UI laden (Klasse fehlt Screen)
     return;
   }
-  let c=S.cls.id;
-  let [l,h,p,g,i]=await Promise.all([getDocs(collection(db,'classes',c,'lessons')),getDocs(collection(db,'users',S.u.uid,'homework')),getDocs(collection(db,'users',S.u.uid,'pack')),getDocs(query(collection(db,'groups'),where('classId','==',c))),getDocs(query(collection(db,'groupInvites'),where('toUid','==',S.u.uid)))]);
-  S.lessons=l.docs.map(d=>({id:d.id,...d.data()}));
-  S.hw=h.docs.map(d=>({id:d.id,scope:'personal',...d.data()}));
-  S.pack=p.docs.map(d=>({id:d.id,...d.data()}));
-  S.groups=g.docs.map(d=>({id:d.id,...d.data()}));
-  S.inv=i.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.status==='pending');
-  for(let x of S.groups){if((await getDoc(doc(db,'groups',x.id,'members',S.u.uid))).exists())S.gm.add(x.id)}
-  for(let x of S.groups.filter(x=>S.gm.has(x.id))){
-    let h=await getDocs(collection(db,'groups',x.id,'homework'));
-    h.forEach(d=>S.hw.push({id:d.id,scope:'group',groupId:x.id,groupName:x.name,...d.data()}));
-  }
+
+  // 5. Stundenplan Live
+  S.unsubs.push(onSnapshot(collection(db,'classes',S.cls.id,'lessons'), s=>{
+    S.lessons = s.docs.map(d=>({id:d.id, ...d.data()}));
+    renderContentOnly();
+  }));
+
+  // 6. Gruppen laden und Live Gruppen-Hausaufgaben
+  getDocs(query(collection(db,'groups'),where('classId','==',S.cls.id))).then(async gDocs => {
+    S.groups = gDocs.docs.map(d=>({id:d.id, ...d.data()}));
+    S.gm = new Set();
+    
+    // Prüfen in welchen Gruppen man ist
+    for(let x of S.groups){
+      let mDoc = await getDoc(doc(db,'groups',x.id,'members',S.u.uid));
+      if(mDoc.exists()) S.gm.add(x.id);
+    }
+    
+    // Echtzeit Listener für Hausaufgaben jeder Gruppe in der man ist
+    S.hwGroup = []; // Reset
+    for(let groupId of S.gm){
+      let groupName = S.groups.find(x=>x.id===groupId).name;
+      S.unsubs.push(onSnapshot(collection(db,'groups',groupId,'homework'), s=>{
+        // Entferne alte Hws dieser Gruppe aus dem Array
+        S.hwGroup = S.hwGroup.filter(h => h.groupId !== groupId);
+        // Füge aktuelle Hws hinzu
+        s.forEach(d => S.hwGroup.push({id:d.id, scope:'group', groupId, groupName, ...d.data()}));
+        renderContentOnly();
+      }));
+    }
+    render(); // Komplettes UI laden
+  });
 }
 
-function nextLesson(subject,from=today()){for(let n=0;n<14;n++){let d=add(from,n),w=wd(d);let l=S.lessons.filter(x=>Number(x.weekday)===w-1).sort((a,b)=>a.period-b.period).find(x=>x.subject?.trim().toLowerCase()===subject?.trim().toLowerCase());if(l)return{date:d,l}}return null}
-function getDueDate(subject){let n=nextLesson(subject);return n?n.date:'9999'}
-function urgent(h){if(h.done)return false;let n=nextLesson(h.subject);return n&&(n.date===today()||n.date===add(today(),1))}
-function task(h){let d=getDueDate(h.subject);return`<div class="task ${urgent(h)?'urgent':''} ${h.done?'done':''}"><button class="check ${h.done?'on':''}" data-check="${h.scope}\vert{}${h.groupId||''}|${h.id}" data-on="${!!h.done}">${h.done?'✓':''}</button><div class=taskmain><b>${esc(h.subject)} – ${esc(h.task)}</b><div class=muted>${d!=='9999'?fmt(d):'Nächste Stunde nicht im Plan'} · <span class="badge ${h.scope==='group'?'group':''}">${h.scope==='group'?'👥 '+esc(h.groupName):
+// -----------------------------------------------------
+// LOGIK & HELFER
+// -----------------------------------------------------
+function nextLesson(subject, from=today()){
+  for(let n=0; n<14; n++){
+    let d=add(from,n), w=wd(d);
+    let l=S.lessons.filter(x=>Number(x.weekday)===w-1).sort((a,b)=>a.period-b.period).find(x=>x.subject?.trim().toLowerCase()===subject?.trim().toLowerCase());
+    if(l) return {date:d, l};
+  }
+  return null;
+}
+function getDueDate(subject){ let n=nextLesson(subject); return n?n.date:'9999'; }
+function urgent(h){ if(h.done)return false; let n=nextLesson(h.subject); return n&&(n.date===today()||n.date===add(today(),1)); }
+function packDueTomorrow(x){ return x.date===add(today(),1) || x.repeatDays?.includes(wd(add(today(),1))); }
+function packDueToday(x){ return x.date===today() || x.repeatDays?.includes(wd(today())); }
+function packForNow(list){ return list.filter(x=>(x.mode==='morning'&&packDueToday(x))||(x.mode!=='morning'&&packDueTomorrow(x))); }
+
+function taskHTML(h){
+  let d=getDueDate(h.subject);
+  return `<div class="task ${urgent(h)?'urgent':''}${h.done?'done':''}">
+    <button class="check ${h.done?'on':''}" data-check="${h.scope}|${h.groupId\vert{}\vert{}''}\vert{}${h.id}" data-on="${!!h.done}">${h.done?'✓':''}</button>
+    <div class=taskmain><b>${esc(h.subject)} – ${esc(h.task)}</b><div class=muted>${d!=='9999'?fmt(d):'Nächste Stunde nicht im Plan'} · <span class="badge ${h.scope==='group'?'group':''}">${h.scope==='group'?'👥 '+esc(h.groupName):'Persönlich'}</span></div></div>
+  </div>`;
+}
+function packHTML(p){
+  return `<div class="pack ${p.done?'done':''}">
+    <button class="check ${p.done?'on':''}" data-pack="${p.scope||'personal'}|${p.groupId\vert{}\vert{}''}\vert{}${p.id}" data-on="${!!p.done}">${p.done?'✓':''}</button>
+    <div><b>${esc(p.item)}</b><div class=muted>${p.repeatDays?.length?'Wiederholt: '+p.repeatDays.map(x=>['So','Mo','Di','Mi','Do','Fr','Sa'][x]).join(', '):p.date?fmt(p.date):'Einmalig'} · ${p.mode==='morning'?'morgens':'abends vorher'}</div></div>
+  </div>`;
+}
+
+function bindChecks(){
+  document.querySelectorAll('[data-check]').forEach(b=>b.onclick=async()=>{
+    let [scope, gId, id] = b.dataset.check.split('|');
+    let nowDone = b.dataset.on!=='true';
+    let path = scope==='personal' ? doc(db,'users',S.u.uid,'homework',id) : doc(db,'groups',gId,'homework',id);
+    await updateDoc(path, {done:nowDone}); // UI updatet sich automatisch dank onSnapshot
+  });
+  document.querySelectorAll('[data-pack]').forEach(b=>b.onclick=async()=>{
+    let [scope, gId, id] = b.dataset.pack.split('|');
+    let nowDone = b.dataset.on!=='true';
+    let path = scope==='personal' ? doc(db,'users',S.u.uid,'pack',id) : doc(db,'groups',gId,'pack',id);
+    await updateDoc(path, {done:nowDone}); // UI updatet sich automatisch dank onSnapshot
+  });
+}
+
+// -----------------------------------------------------
+// VIEWS (Werden bei Änderungen aufgerufen)
+// -----------------------------------------------------
+function grouped(a){
+  if(!a.length) return '<div class=empty>Keine weiteren offenen Aufgaben.</div>';
+  let m={}; a.forEach(x=>{let d=getDueDate(x.subject);(m[d]??=[]).push(x)});
+  return Object.keys(m).sort().map(k=>`<div class=day><h3>${k==='9999'?'Ohne Datum im Plan':fmt(k)}</h3><div class=tasks>${m[k].map(taskHTML).join('')}</div></div>`).join('');
+}
+
+function renderContentOnly(){
+  if(!$('content')) return; // Wenn UI noch nicht aufgebaut ist
+  if(S.view==='home') home();
+  if(S.view==='timetable') timetable();
+  if(S.view==='homework') homeworkView();
+  if(S.view==='pack') packView();
+  if(S.view==='personal') personal();
+  if(S.view==='groups') { if(S.chat) groupView(); else groups(); }
+  if(S.view==='inbox') inbox();
+  if(S.view==='admin') admin();
+  bindChecks();
+}
+
+function home(){
+  let d=today(), ls=S.lessons.filter(x=>Number(x.weekday)===wd(d)-1).sort((a,b)=>a.period-b.period);
+  let allHw = getAllHw();
+  let due=allHw.filter(urgent), rest=allHw.filter(x=>!x.done&&!urgent(x)), p=packForNow(S.pack);
+  $('content').innerHTML=`
+    <div class=card><div class=title><h2>📅 ${fmt(d)}</h2></div>${ls.length?`<div class=grid>${ls.map(x=>`<div class=lesson><small class=muted>${x.period}. Stunde · ${esc(x.time\vert{}\vert{}'')}</small><strong>${esc(x.subject)}</strong><small class=muted>${esc(x.teacher\vert{}\vert{}'')}${esc(x.room||'')}</small></div>`).join('')}</div>`:'<div class=empty>Kein Stundenplan für heute.</div>'}</div>
+    <div class=card><div class=title><h2>🔴 Jetzt fällig</h2><span class="badge red">${due.length}</span></div>${due.length?`<div class=tasks>${due.map(taskHTML).join('')}</div>`:'<div class=empty>Alles erledigt.</div>'}</div>
+    <div class=card><div class=title><h2>📚 Weitere Hausaufgaben</h2><button class="btn primary" id=ah>+ Neu</button></div>${grouped(rest)}</div>
+    <div class=card><div class=title><h2>🎒 Packen</h2><button class="btn primary" id=ap>+ Sache</button></div>${p.length?`<div class=tasks>${p.map(packHTML).join('')}</div>`:'<div class=empty>Nichts zu packen für jetzt.</div>'}</div>
+  `;
+  $('ah').onclick=()=>hwModal(); $('ap').onclick=()=>packModal();
+}
+
+function homeworkView(){
+  $('content').innerHTML=`<div class=card><div class=title><h2>Meine Hausaufgaben</h2><button class="btn primary" id=ah>+ Neu</button></div>${grouped(S.hwPersonal.filter(x=>!x.done))}</div>`;
+  $('ah').onclick=()=>hwModal();
+}
+
+function packView(){
+  $('content').innerHTML=`<div class=card><div class=title><h2>Meine Packliste</h2><button class="btn primary" id=ap>+ Sache</button></div><div class=tasks>${S.pack.map(packHTML).join('')||'<div class=empty>Noch nichts.</div>'}</div></div>
+  <div class=card><h3>Standard-Erinnerung</h3><div class=actions><button class="btn ${S.ud.packMode==='morning'?'primary':''}" id=morning>Morgens</button><button class="btn ${S.ud.packMode!=='morning'?'primary':''}" id=evening>Abends vorher</button></div></div>`;
+  $('ap').onclick=()=>packModal();
+  $('morning').onclick=async()=>await updateDoc(doc(db,'users',S.u.uid),{packMode:'morning'});
+  $('evening').onclick=async()=>await updateDoc(doc(db,'users',S.u.uid),{packMode:'evening'});
+}
+
+function personal(){
+  $('content').innerHTML=`<div class=card><div class=title><h2>👤 Persönlich</h2><div class=actions><button class="btn primary" id=ph>+ Hausaufgabe</button><button class="btn primary" id=pp>+ Packliste</button></div></div><p class=muted>Nur du kannst diese Inhalte sehen.</p></div>
+  <div class=card><h2>Hausaufgaben</h2>${grouped(S.hwPersonal.filter(x=>!x.done))}</div>
+  <div class=card><h2>Packliste</h2><div class=tasks>${S.pack.map(packHTML).join('')||'<div class=empty>Noch nichts.</div>'}</div></div>`;
+  $('ph').onclick=()=>hwModal(); $('pp').onclick=()=>packModal();
+}
+
+function groups(){
+  if(S.stopChat){S.stopChat(); S.stopChat=null;}
+  if(!S.cls){ $('content').innerHTML='<div class=card><div class=empty>Wähle zuerst eine Klasse.</div></div>'; return; }
+  let gs=S.groups.filter(g=>S.gm.has(g.id));
+  $('content').innerHTML=`<div class=card

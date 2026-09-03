@@ -13,7 +13,6 @@
 body { 
   margin: 0; 
   background-color: var(--bg); 
-  /* Kariertes Schul-Papier Hintergrund */
   background-image: 
     linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0,0,0,0.06) 1px, transparent 1px);
@@ -93,7 +92,6 @@ body {
 <script type="module">
 const $ = x => document.getElementById(x);
 
-// Arcade-Trick Fix: Zeichnet nur den sicheren Rahmen, ohne auf fehlende Nutzerdaten zuzugreifen
 if(localStorage.getItem('isLoggedIn') === 'true'){
   if($('loader')) $('loader').style.display = 'none';
   $('root').innerHTML = `
@@ -126,7 +124,7 @@ const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const today=()=>new Date().toISOString().slice(0,10), add=(d,n)=>{let x=new Date(d+'T12:00:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)}, wd=d=>new Date(d+'T12:00:00').getDay(), fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'2-digit',month:'2-digit'});
 
 function err(e){return esc(e?.message||e)}
-function sys(){return !!S.ud?.systemAdmin} // Wieder normal, bezieht System-Admin Status aus Firebase
+function sys(){return !!S.ud?.systemAdmin}
 function cad(){return sys()||!!S.cls?.adminIds?.includes(S.u.uid)}
 function clearListeners(){ S.unsubs.forEach(u=>u()); S.unsubs=[]; if(S.stopChat){S.stopChat();S.stopChat=null;} }
 function getAllHw(){ return [...S.hwPersonal, ...S.hwGroup]; }
@@ -209,7 +207,7 @@ async function initApp(){
        S.allClasses = ac.docs.map(d=>({id:d.id, ...d.data()}));
     }
     
-    buildShell(); // Baue die echte Seitenleiste auf (jetzt kennen wir den Admin-Status)
+    buildShell();
     setupLiveSync();
   } catch(e) {
     $('root').innerHTML=`<div class=auth><div class=authbox><h2>Datenbank-Fehler</h2><div class="msg err">${err(e)}</div><button class="btn red" id=loErr>Ausloggen</button></div></div>`;
@@ -289,7 +287,7 @@ function taskHTML(h){
 function packHTML(p){
   return `<div class="pack ${p.done?'done':''}">
     <button class="check ${p.done?'on':''}" data-pack="${p.id}" data-on="${!!p.done}">${p.done?'✓':''}</button>
-    <div><b>${esc(p.item)}</b><div class=muted>${p.date?fmt(p.date):'Immer'} · ${p.mode==='morning'?'morgens':'abends vorher'}</div></div>
+    <div><b>${esc(p.item)}</b><div class=muted>${p.repeatDays?.length?'Jeden: '+p.repeatDays.map(x=>['So','Mo','Di','Mi','Do','Fr','Sa'][x]).join(', '):p.date?fmt(p.date):'Einmalig'} · ${p.mode==='morning'?'morgens':'abends vorher'}</div></div>
   </div>`;
 }
 
@@ -315,7 +313,7 @@ function grouped(a){
 }
 
 function renderContentOnly(){
-  if(!$('content') || !S.u || !S.ud) return; // FIX: Crash-Schutz, falls Daten noch fehlen
+  if(!$('content') || !S.u || !S.ud) return;
   if(S.view==='home') home();
   if(S.view==='timetable') timetable();
   if(S.view==='homework') homeworkView();
@@ -394,7 +392,6 @@ function home(){
   $('ah').onclick=()=>hwModal(); $('ap').onclick=()=>packModal();
 }
 
-// ADMIN BEREICH
 async function adminView(){
   $('content').innerHTML=`<div class=loading>Lade Anfragen...</div>`;
   let reqs = await getDocs(query(collection(db,'classRequests')));
@@ -431,7 +428,25 @@ async function adminView(){
 
 function inbox(){
   $('content').innerHTML=`<div class=card><div class=title><h2>Benachrichtigungen</h2></div>
-  <div class=tasks>${S.notifications.map(n=>`<div class="box"><b>${esc(n.title||'System')}</b><div class="muted" style="margin-top:4px;">${esc(n.text)}</div></div>`).join('')||'<div class=empty>Du hast keine Benachrichtigungen.</div>'}</div></div>`;
+  <div class=tasks>${S.notifications.map(n=>`
+    <div class="box">
+      <b>${esc(n.title||'System')}</b>
+      <div class="muted" style="margin-top:4px;">${esc(n.text)}</div>
+      ${n.type==='groupInvite' ? `<div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn green small" data-accg="${n.groupId}" data-nid="${n.id}">Annehmen</button>
+        <button class="btn red small" data-rejn="${n.id}">Ablehnen</button>
+      </div>` : `<button class="btn small" style="margin-top:10px" data-rejn="${n.id}">X Löschen</button>`}
+    </div>`).join('')||'<div class=empty>Du hast keine Benachrichtigungen.</div>'}</div></div>`;
+
+  document.querySelectorAll('[data-accg]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    await setDoc(doc(db,'groups',b.dataset.accg,'members',S.u.uid), {uid:S.u.uid});
+    await deleteDoc(doc(db,'users',S.u.uid,'notifications',b.dataset.nid));
+  });
+  document.querySelectorAll('[data-rejn]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    await deleteDoc(doc(db,'users',S.u.uid,'notifications',b.dataset.rejn));
+  });
 }
 
 function homeworkView(){
@@ -472,8 +487,42 @@ function timetable(){
 function groups(){
   if(!S.cls){ home(); return; }
   let gs=S.groups.filter(g=>S.gm.has(g.id));
-  $('content').innerHTML=`<div class="card"><div class="title"><h2>Gruppen</h2></div><div class="groups">${gs.length ? gs.map(g=>`<div class="group"><b>${esc(g.name)}</b><button class="btn primary small" data-chat="${g.id}">Chat öffnen</button></div>`).join('') : '<div class="empty">Du bist in keinen Gruppen.</div>'}</div></div>`;
+  $('content').innerHTML=`<div class="card">
+    <div class="title"><h2>Gruppen</h2><button class="btn primary" id="ng">+ Gruppe erstellen</button></div>
+    <div class="groups">${gs.length ? gs.map(g=>`
+      <div class="group" style="flex-direction:column; align-items:flex-start; gap:12px;">
+        <div style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+          <b>${esc(g.name)}</b>
+          <span class="badge ${g.adminIds?.includes(S.u.uid)?'group':''}">${g.adminIds?.includes(S.u.uid)?'Admin':'Mitglied'}</span>
+        </div>
+        <div style="display:flex; gap:8px; width:100%;">
+          <button class="btn primary small" style="flex:1;" data-chat="${g.id}">Chat</button>
+          ${g.adminIds?.includes(S.u.uid) ? `<button class="btn small" style="flex:1;" data-inv="${g.id}">+ Einladen</button>` : ''}
+        </div>
+      </div>`).join('') : '<div class="empty">Du bist in keinen Gruppen.</div>'}
+    </div>
+  </div>`;
+
+  $('ng').onclick=async()=>{
+    let n = prompt("Name der neuen Gruppe?"); if(!n) return;
+    let res = await addDoc(collection(db,'groups'), {name:n, classId:S.cls.id, adminIds:[S.u.uid]});
+    await setDoc(doc(db,'groups',res.id,'members',S.u.uid), {uid:S.u.uid});
+  };
+  
   document.querySelectorAll('[data-chat]').forEach(b=>b.onclick=()=>groupChat(b.dataset.chat));
+  
+  document.querySelectorAll('[data-inv]').forEach(b=>b.onclick=async()=>{
+    let email = prompt("E-Mail Adresse des Mitschülers (muss registriert sein):");
+    if(!email) return;
+    email = email.trim().toLowerCase();
+    let uSnap = await getDocs(query(collection(db,'users'), where('email','==',email)));
+    if(uSnap.empty) { alert("Niemand mit dieser E-Mail gefunden!"); return; }
+    let toUid = uSnap.docs[0].id;
+    let gId = b.dataset.inv;
+    let g = S.groups.find(x=>x.id===gId);
+    await addDoc(collection(db,'users',toUid,'notifications'), { type:'groupInvite', groupId: gId, groupName: g.name, title:'Gruppen-Einladung', text: 'Du wurdest in die Gruppe "'+g.name+'" eingeladen.', ts: serverTimestamp() });
+    alert("Einladung verschickt!");
+  });
 }
 
 function groupChat(gId){
@@ -543,7 +592,16 @@ function packModal(){
             <option value="evening">Immer Abends vorher</option>
           </select>
         </div>
-        <div class="field"><label>Datum (Optional)</label><input type="date" id="pd"></div>
+        <div class="field"><label>Einmalig am (Optional)</label><input type="date" id="pd"></div>
+        <div class="field"><label>Oder Wiederholung:</label>
+          <div style="display:flex;gap:10px;margin-top:5px;flex-wrap:wrap;">
+            <label><input type="checkbox" name="prd" value="1"> Mo</label>
+            <label><input type="checkbox" name="prd" value="2"> Di</label>
+            <label><input type="checkbox" name="prd" value="3"> Mi</label>
+            <label><input type="checkbox" name="prd" value="4"> Do</label>
+            <label><input type="checkbox" name="prd" value="5"> Fr</label>
+          </div>
+        </div>
         <div class="actions"><button type="submit" class="btn primary">Speichern</button><button type="button" class="btn" id="mcl">Abbrechen</button></div>
       </form>
     </div>
@@ -552,7 +610,14 @@ function packModal(){
   $('mbg').onclick=e=>{if(e.target.id==='mbg')$('modal').innerHTML=''}
   $('pf').onsubmit=async e=>{
     e.preventDefault();
-    await addDoc(collection(db,'users',S.u.uid,'pack'), {item: $('pi').value.trim(), mode: $('pm').value, date: $('pd').value||null, done:false});
+    let days = Array.from(document.querySelectorAll('input[name="prd"]:checked')).map(c=>Number(c.value));
+    let pDate = $('pd').value||null;
+    
+    let data = {item: $('pi').value.trim(), mode: $('pm').value, done:false};
+    if(pDate) data.date = pDate;
+    if(days.length) data.repeatDays = days;
+    
+    await addDoc(collection(db,'users',S.u.uid,'pack'), data);
     $('modal').innerHTML='';
   }
 }
